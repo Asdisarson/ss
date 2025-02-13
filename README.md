@@ -1,48 +1,124 @@
-# Node.js API with SQLite
+# Product Search API
 
-A simple REST API built with Node.js and SQLite database.
+A high-performance REST API for product search and inventory management, featuring full-text search capabilities, Redis caching, and real-time warehouse stock levels.
 
-## Setup
+## Features
 
-1. Install dependencies:
+- 🔍 Advanced multi-term search across product codes, names, and barcodes
+- 📊 Real-time warehouse inventory tracking
+- 🚀 Redis caching for optimized performance
+- 📝 Comprehensive logging system
+- 🔄 Automatic product synchronization
+- 📋 Pagination support
+- 🔒 Production-ready error handling
+
+## Prerequisites
+
+- Node.js >= 14
+- Redis server
+- SQLite3
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone [repository-url]
+cd [project-directory]
+```
+
+2. Install dependencies:
 ```bash
 npm install
 ```
 
-2. Create a `.env` file in the root directory and add:
-```
-PORT=3000
+3. Configure environment variables:
+```bash
+cp .env.example .env
 ```
 
-3. Start the server:
-- For production:
-```bash
-npm start
+4. Edit `.env` with your configuration:
 ```
-- For development (with auto-reload):
+PORT=3000
+REDIS_HOST=localhost
+REDIS_PORT=6379
+NODE_ENV=development
+LOG_LEVEL=info
+DK_API_KEY=your-api-key
+```
+
+## Usage
+
+### Development
 ```bash
 npm run dev
 ```
 
+### Production
+```bash
+npm start
+```
+
 ## API Endpoints
 
-### Users
+### Get All Products
+```
+GET /api/products
+```
 
-#### GET /api/users
-- Returns all users
-- Response: Array of user objects
+### Search Products
+```
+GET /api/products/search
+```
 
-#### POST /api/users
-- Creates a new user
-- Request body:
+Query Parameters:
+- `q`: Search query (required)
+- `page`: Page number (default: 1)
+- `pageSize`: Results per page (10, 25, 50, 100, 1000) (default: 25)
+
+Example:
+```
+GET /api/products/search?q=blue shirt&page=1&pageSize=25
+```
+
+Response:
 ```json
 {
-    "name": "John Doe",
-    "email": "john@example.com"
+    "total": 150,
+    "page": 1,
+    "pageSize": 25,
+    "totalPages": 6,
+    "results": [...]
 }
 ```
-- Response: Created user object
 
-## Database
+## Monitoring
 
-The application uses SQLite as the database, stored in `database.sqlite` file. The database will be automatically created when you first run the application. 
+Logs are stored in the `logs` directory:
+- `logs/error.log`: Error-level logs
+- `logs/combined.log`: All logs
+
+## Performance
+
+- Redis caching with 5-minute TTL
+- Database indexes for optimized search
+- Relevance-based search results
+- Response time logging
+
+## Error Handling
+
+- Comprehensive error logging
+- Graceful shutdown handling
+- Production/Development error responses
+- Automatic retry mechanisms for external services
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the ISC License - see the LICENSE file for details. 
