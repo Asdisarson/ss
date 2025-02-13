@@ -163,6 +163,77 @@ app.get('/api/products', (req, res) => {
     });
 });
 
+// Search products
+app.get('/api/products/search', (req, res) => {
+    const searchQuery = req.query.q?.trim();
+    
+    if (!searchQuery) {
+        return res.json([]);
+    }
+
+    // Split search terms
+    const terms = searchQuery.split(/\s+/).filter(term => term.length > 0);
+    
+    if (terms.length === 0) {
+        return res.json([]);
+    }
+
+    // Build the SQL query dynamically
+    let sql = 'SELECT *, ';
+    
+    // Add relevance scoring for each term
+    const relevanceTerms = terms.map((_, index) => {
+        return `
+            CASE 
+                WHEN item_code LIKE $${index * 3 + 1} THEN 100
+                WHEN item_code LIKE $${index * 3 + 2} THEN 50
+                WHEN name LIKE $${index * 3 + 2} THEN 40
+                WHEN barcodes LIKE $${index * 3 + 2} THEN 30
+                WHEN item_code LIKE $${index * 3 + 3} THEN 20
+                WHEN name LIKE $${index * 3 + 3} THEN 10
+                WHEN barcodes LIKE $${index * 3 + 3} THEN 5
+                ELSE 0
+            END`;
+    });
+
+    sql += `(${relevanceTerms.join(' + ')}) as relevance `;
+    sql += 'FROM products WHERE ';
+
+    // Add search conditions for each term
+    const conditions = terms.map((_, index) => {
+        return `(
+            item_code LIKE $${index * 3 + 1} OR 
+            item_code LIKE $${index * 3 + 2} OR 
+            item_code LIKE $${index * 3 + 3} OR
+            name LIKE $${index * 3 + 2} OR 
+            name LIKE $${index * 3 + 3} OR
+            barcodes LIKE $${index * 3 + 2} OR 
+            barcodes LIKE $${index * 3 + 3}
+        )`;
+    });
+
+    sql += conditions.join(' AND ');
+    sql += ' ORDER BY relevance DESC LIMIT 100';
+
+    // Prepare parameters for the query
+    const params = [];
+    terms.forEach(term => {
+        params.push(term); // Exact match
+        params.push(`%${term}%`); // Contains
+        params.push(`%${term}`); // Ends with
+    });
+
+    // Execute the search query
+    db.all(sql, params, (err, rows) => {
+        if (err) {
+            console.error('Search error:', err);
+            res.status(500).json({ error: err.message });
+            return;
+        }
+        res.json(rows);
+    });
+});
+
 // Start server
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
