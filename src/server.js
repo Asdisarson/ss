@@ -468,7 +468,16 @@ process.on('unhandledRejection', (reason, promise) => {
     logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Start server
-app.listen(port, () => {
-    logger.info(`Server is running on port ${port}`);
-}); 
+// Start server only if not in test environment
+if (process.env.NODE_ENV !== 'test') {
+    app.listen(port, () => {
+        logger.info(`Server is running on port ${port}`);
+    });
+}
+
+// Export for testing
+module.exports = {
+    app,
+    redis,
+    db
+}; 
