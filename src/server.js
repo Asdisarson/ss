@@ -4,11 +4,32 @@ const sqlite3 = require('sqlite3').verbose();
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
+const Redis = require('ioredis');
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
 const DB_FILE = './database.sqlite';
+
+// Redis setup
+const redis = new Redis({
+    host: process.env.REDIS_HOST || 'localhost',
+    port: process.env.REDIS_PORT || 6379,
+    password: process.env.REDIS_PASSWORD,
+    retryStrategy: (times) => {
+        const delay = Math.min(times * 50, 2000);
+        return delay;
+    }
+});
+
+redis.on('error', (err) => {
+    console.error('Redis error:', err);
+});
+
+// Cache configuration
+const CACHE_TTL = 300; // 5 minutes in seconds
+const VALID_PAGE_SIZES = [10, 25, 50, 100, 1000];
+const DEFAULT_PAGE_SIZE = 25;
 
 // Middleware
 app.use(cors());
@@ -31,36 +52,46 @@ const db = new sqlite3.Database(DB_FILE, async (err) => {
 async function initializeDatabase() {
     return new Promise((resolve, reject) => {
         // Create products table
-        db.run(`
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_code TEXT UNIQUE NOT NULL,
-                name TEXT NOT NULL,
-                unit_price_with_tax REAL,
-                barcodes TEXT,
-                warehouse_glaesibaer INTEGER DEFAULT 0,
-                warehouse_kringlan INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        `, async (err) => {
-            if (err) {
-                console.error('Error creating products table:', err);
-                reject(err);
-                return;
-            }
+        db.serialize(() => {
+            db.run(`
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_code TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    unit_price_with_tax REAL,
+                    barcodes TEXT,
+                    warehouse_glaesibaer INTEGER DEFAULT 0,
+                    warehouse_kringlan INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `, (err) => {
+                if (err) {
+                    console.error('Error creating products table:', err);
+                    reject(err);
+                    return;
+                }
+            });
+
+            // Create indexes for faster searching
+            db.run('CREATE INDEX IF NOT EXISTS idx_item_code ON products(item_code)');
+            db.run('CREATE INDEX IF NOT EXISTS idx_name ON products(name)');
+            db.run('CREATE INDEX IF NOT EXISTS idx_barcodes ON products(barcodes)');
 
             // If this is a new database, fetch products
             if (isNewDatabase) {
                 console.log('New database detected, fetching initial products...');
-                try {
-                    await fetchAndStoreProducts();
-                    console.log('Initial product sync completed');
-                } catch (error) {
-                    console.error('Error during initial product sync:', error);
-                }
+                fetchAndStoreProducts()
+                    .then(() => {
+                        console.log('Initial product sync completed');
+                        resolve();
+                    })
+                    .catch(error => {
+                        console.error('Error during initial product sync:', error);
+                        reject(error);
+                    });
+            } else {
+                resolve();
             }
-
-            resolve();
         });
     });
 }
@@ -164,21 +195,56 @@ app.get('/api/products', (req, res) => {
 });
 
 // Search products
-app.get('/api/products/search', (req, res) => {
+app.get('/api/products/search', async (req, res) => {
     const searchQuery = req.query.q?.trim();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    let pageSize = parseInt(req.query.pageSize) || DEFAULT_PAGE_SIZE;
+    
+    // Validate page size
+    if (!VALID_PAGE_SIZES.includes(pageSize)) {
+        pageSize = DEFAULT_PAGE_SIZE;
+    }
     
     if (!searchQuery) {
-        return res.json([]);
+        return res.json({
+            total: 0,
+            page,
+            pageSize,
+            totalPages: 0,
+            results: []
+        });
     }
 
     // Split search terms
     const terms = searchQuery.split(/\s+/).filter(term => term.length > 0);
     
     if (terms.length === 0) {
-        return res.json([]);
+        return res.json({
+            total: 0,
+            page,
+            pageSize,
+            totalPages: 0,
+            results: []
+        });
     }
 
+    // Try to get cached results
+    const cacheKey = `search:${searchQuery}:page${page}:size${pageSize}`;
+    try {
+        const cachedResult = await redis.get(cacheKey);
+        if (cachedResult) {
+            return res.json(JSON.parse(cachedResult));
+        }
+    } catch (error) {
+        console.error('Redis cache error:', error);
+        // Continue without cache if Redis fails
+    }
+
+    // Calculate offset for pagination
+    const offset = (page - 1) * pageSize;
+
     // Build the SQL query dynamically
+    let countSql = 'SELECT COUNT(*) as total FROM products WHERE ';
     let sql = 'SELECT *, ';
     
     // Add relevance scoring for each term
@@ -212,8 +278,10 @@ app.get('/api/products/search', (req, res) => {
         )`;
     });
 
-    sql += conditions.join(' AND ');
-    sql += ' ORDER BY relevance DESC LIMIT 100';
+    const whereClause = conditions.join(' AND ');
+    countSql += whereClause;
+    sql += whereClause;
+    sql += ' ORDER BY relevance DESC LIMIT ? OFFSET ?';
 
     // Prepare parameters for the query
     const params = [];
@@ -223,15 +291,46 @@ app.get('/api/products/search', (req, res) => {
         params.push(`%${term}`); // Ends with
     });
 
-    // Execute the search query
-    db.all(sql, params, (err, rows) => {
-        if (err) {
-            console.error('Search error:', err);
-            res.status(500).json({ error: err.message });
-            return;
+    try {
+        // Get total count first
+        const totalCount = await new Promise((resolve, reject) => {
+            db.get(countSql, params, (err, row) => {
+                if (err) reject(err);
+                else resolve(row.total);
+            });
+        });
+
+        // Then get paginated results
+        const searchParams = [...params, pageSize, offset];
+        const rows = await new Promise((resolve, reject) => {
+            db.all(sql, searchParams, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        const totalPages = Math.ceil(totalCount / pageSize);
+        const result = {
+            total: totalCount,
+            page,
+            pageSize,
+            totalPages,
+            results: rows
+        };
+
+        // Cache the results
+        try {
+            await redis.setex(cacheKey, CACHE_TTL, JSON.stringify(result));
+        } catch (error) {
+            console.error('Redis cache error:', error);
+            // Continue without cache if Redis fails
         }
-        res.json(rows);
-    });
+
+        res.json(result);
+    } catch (error) {
+        console.error('Search error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Start server
