@@ -1,0 +1,17 @@
+[Unit]
+Description=SS Product Search Service
+After=network.target redis-server.service
+
+[Service]
+Type=forking
+User=nexus
+Environment=NODE_ENV=production
+Environment=PORT=3000
+WorkingDirectory=/home/nexus/apps/ss
+ExecStart=/usr/local/bin/pm2 start src/server.js --name ss
+ExecReload=/usr/local/bin/pm2 reload ss
+ExecStop=/usr/local/bin/pm2 stop ss
+Restart=always
+
+[Install]
+WantedBy=multi-user.target 
