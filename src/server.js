@@ -7,6 +7,8 @@ const fs = require('fs');
 const Redis = require('ioredis');
 const winston = require('winston');
 const expressWinston = require('express-winston');
+const path = require('path');
+const os = require('os');
 require('dotenv').config();
 
 // Function declarations first
@@ -238,9 +240,54 @@ const CACHE_TTL = 300; // 5 minutes in seconds
 const VALID_PAGE_SIZES = [10, 25, 50, 100, 1000];
 const DEFAULT_PAGE_SIZE = 25;
 
+// Track last update time
+let lastUpdateTime = null;
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Force refresh endpoint
+app.post('/api/refresh', async (req, res) => {
+    try {
+        await fetchAndStoreProducts(db, logger);
+        lastUpdateTime = new Date();
+        res.json({ 
+            success: true, 
+            message: 'Data refreshed successfully',
+            lastUpdate: lastUpdateTime 
+        });
+    } catch (error) {
+        logger.error('Refresh error:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to refresh data' 
+        });
+    }
+});
+
+// Get last update time
+app.get('/api/last-update', (req, res) => {
+    res.json({ lastUpdate: lastUpdateTime });
+});
+
+// Update lastUpdateTime after successful initial fetch
+const originalFetchAndStore = fetchAndStoreProducts;
+async function fetchAndStoreWithTracking(db, logger) {
+    await originalFetchAndStore(db, logger);
+    lastUpdateTime = new Date();
+}
+
+// Replace the original function with our tracking version
+fetchAndStoreProducts = fetchAndStoreWithTracking;
+
+// Serve search page as the default page
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'search.html'));
+});
 
 // Request logging middleware
 app.use(expressWinston.logger({
@@ -445,6 +492,27 @@ app.get('/api/products/search', async (req, res) => {
     }
 });
 
+// Search endpoint
+app.get('/api/search', (req, res) => {
+    const searchTerm = req.query.q || '';
+    const query = `
+        SELECT item_code, name, unit_price_with_tax, barcodes, 
+               warehouse_glaesibaer, warehouse_kringlan
+        FROM products
+        WHERE name LIKE ? OR item_code LIKE ? OR barcodes LIKE ?
+        LIMIT 100`;
+    const searchPattern = `%${searchTerm}%`;
+    
+    db.all(query, [searchPattern, searchPattern, searchPattern], (err, rows) => {
+        if (err) {
+            logger.error('Search error:', err);
+            res.status(500).json({ error: 'Database error' });
+            return;
+        }
+        res.json(rows);
+    });
+});
+
 // Process termination handling
 process.on('SIGTERM', () => {
     logger.info('SIGTERM received. Shutting down gracefully...');
@@ -470,6 +538,19 @@ process.on('unhandledRejection', (reason, promise) => {
 if (process.env.NODE_ENV !== 'test') {
     app.listen(port, () => {
         logger.info(`Server is running on port ${port}`);
+        // Get network interfaces
+        const networkInterfaces = os.networkInterfaces();
+        logger.info('Available on:');
+        // Log all non-internal IPv4 addresses
+        Object.keys(networkInterfaces).forEach((interfaceName) => {
+            networkInterfaces[interfaceName].forEach((netInterface) => {
+                if (netInterface.family === 'IPv4' && !netInterface.internal) {
+                    logger.info(`  http://${netInterface.address}:${port}`);
+                }
+            });
+        });
+        // Also show localhost
+        logger.info(`  http://localhost:${port}`);
     });
 }
 

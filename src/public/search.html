@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="is">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vöruleit</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .search-container {
+            max-width: 1200px;
+            margin: 2rem auto;
+        }
+        .search-box {
+            margin-bottom: 2rem;
+        }
+        .table-responsive {
+            margin-top: 1rem;
+        }
+        thead th {
+            position: sticky;
+            top: 0;
+            background-color: white;
+            z-index: 1;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .highlight {
+            background-color: #fff3cd;
+            padding: 2px;
+            border-radius: 2px;
+        }
+        .stock-available {
+            color: #198754;
+            font-weight: bold;
+        }
+        .stock-low {
+            color: #fd7e14;
+        }
+        .stock-none {
+            color: #dc3545;
+        }
+        .last-update {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+        .refresh-btn {
+            margin-left: 1rem;
+        }
+        .refresh-spinner {
+            display: none;
+            width: 1rem;
+            height: 1rem;
+        }
+        .refreshing .refresh-spinner {
+            display: inline-block;
+        }
+        .refreshing .refresh-text {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container search-container">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Vöruleit</h1>
+            <div class="d-flex align-items-center">
+                <span id="lastUpdate" class="last-update">Síðast uppfært: Sæki gögn...</span>
+                <button id="refreshBtn" class="btn btn-outline-primary refresh-btn" onclick="refreshData()">
+                    <span class="refresh-text">Uppfæra gögn</span>
+                    <div class="spinner-border refresh-spinner" role="status">
+                        <span class="visually-hidden">Uppfæri...</span>
+                    </div>
+                </button>
+            </div>
+        </div>
+        <div class="search-box">
+            <div class="input-group">
+                <input type="text" id="searchInput" class="form-control" placeholder="Leita að vöru...">
+                <button class="btn btn-primary" onclick="performSearch()">Leita</button>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead>
+                    <tr>
+                        <th>Vörunúmer</th>
+                        <th>Nafn</th>
+                        <th>Verð</th>
+                        <th>Strikamerki</th>
+                        <th>Glæsibær</th>
+                        <th>Kringlan</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsBody">
+                    <!-- Results will be populated here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // Format date in Icelandic format
+        function formatDate(date) {
+            if (!date) return 'Aldrei';
+            const d = new Date(date);
+            return d.toLocaleString('is-IS', {
+                year: 'numeric',
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        // Update the last update time display
+        async function updateLastUpdateTime() {
+            try {
+                const response = await fetch('/api/last-update');
+                const data = await response.json();
+                document.getElementById('lastUpdate').textContent = 
+                    `Síðast uppfært: ${formatDate(data.lastUpdate)}`;
+            } catch (error) {
+                console.error('Error fetching last update time:', error);
+            }
+        }
+
+        // Force refresh the data
+        async function refreshData() {
+            const refreshBtn = document.getElementById('refreshBtn');
+            refreshBtn.classList.add('refreshing');
+            refreshBtn.disabled = true;
+
+            try {
+                const response = await fetch('/api/refresh', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('lastUpdate').textContent = 
+                        `Síðast uppfært: ${formatDate(data.lastUpdate)}`;
+                    // Refresh the search results if we have an active search
+                    const searchInput = document.getElementById('searchInput');
+                    if (searchInput.value.trim()) {
+                        await performSearch();
+                    }
+                } else {
+                    alert('Villa kom upp við uppfærslu gagna');
+                }
+            } catch (error) {
+                console.error('Error refreshing data:', error);
+                alert('Villa kom upp við uppfærslu gagna');
+            } finally {
+                refreshBtn.classList.remove('refreshing');
+                refreshBtn.disabled = false;
+            }
+        }
+
+        // Get initial last update time
+        updateLastUpdateTime();
+
+        function highlightText(text, searchTerm) {
+            if (!searchTerm) return text;
+            const regex = new RegExp(searchTerm, 'gi');
+            return text.replace(regex, match => `<span class="highlight">${match}</span>`);
+        }
+
+        function formatPrice(price) {
+            return new Intl.NumberFormat('is-IS', {
+                style: 'currency',
+                currency: 'ISK',
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0
+            }).format(price);
+        }
+
+        function getStockClass(quantity) {
+            if (quantity > 5) return 'stock-available';
+            if (quantity > 0) return 'stock-low';
+            return 'stock-none';
+        }
+
+        async function performSearch() {
+            const searchTerm = document.getElementById('searchInput').value;
+            const resultsBody = document.getElementById('resultsBody');
+            
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(searchTerm)}`);
+                const data = await response.json();
+                
+                resultsBody.innerHTML = '';
+                
+                if (data.length === 0) {
+                    resultsBody.innerHTML = '<tr><td colspan="6" class="text-center">Engar niðurstöður fundust</td></tr>';
+                    return;
+                }
+
+                data.forEach(product => {
+                    const barcodes = JSON.parse(product.barcodes || '[]');
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${highlightText(product.item_code, searchTerm)}</td>
+                        <td>${highlightText(product.name, searchTerm)}</td>
+                        <td>${formatPrice(product.unit_price_with_tax)}</td>
+                        <td>${barcodes.map(code => highlightText(code, searchTerm)).join(', ')}</td>
+                        <td class="${getStockClass(product.warehouse_glaesibaer)}">${product.warehouse_glaesibaer || 0}</td>
+                        <td class="${getStockClass(product.warehouse_kringlan)}">${product.warehouse_kringlan || 0}</td>
+                    `;
+                    resultsBody.appendChild(row);
+                });
+            } catch (error) {
+                console.error('Error:', error);
+                resultsBody.innerHTML = '<tr><td colspan="6" class="text-center text-danger">Villa kom upp við leit</td></tr>';
+            }
+        }
+
+        // Allow search on Enter key press
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+    </script>
+</body>
+</html> 

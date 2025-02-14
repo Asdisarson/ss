@@ -20,8 +20,6 @@ A high-performance REST API for product search and inventory management, featuri
 
 ## Installation
 
-### Standard Installation
-
 1. Clone the repository:
 ```bash
 git clone [repository-url]
@@ -46,123 +44,6 @@ REDIS_PORT=6379
 NODE_ENV=development
 LOG_LEVEL=info
 DK_API_KEY=your-api-key
-```
-
-### Raspberry Pi Installation (Ubuntu Server)
-
-1. Update your system:
-```bash
-sudo apt update && sudo apt upgrade -y
-```
-
-2. Connect the 2.5-inch Display:
-   - Connect the display to the Raspberry Pi's GPIO pins:
-     ```
-     Display   ->  Raspberry Pi
-     VCC       ->  3.3V (Pin 1)
-     GND       ->  Ground (Pin 6)
-     CS        ->  CE0 (Pin 24)
-     RESET     ->  GPIO24 (Pin 18)
-     DC        ->  GPIO25 (Pin 22)
-     MOSI      ->  MOSI (Pin 19)
-     SCK       ->  SCLK (Pin 23)
-     LED       ->  3.3V (Pin 17)
-     MISO      ->  MISO (Pin 21)
-     ```
-
-3. Clone the repository:
-```bash
-git clone [repository-url]
-cd [project-directory]
-```
-
-4. Make the installation script executable:
-```bash
-chmod +x install.sh
-```
-
-5. Run the installation script:
-```bash
-sudo ./install.sh
-```
-
-The script will:
-- Install Node.js and Redis
-- Install Python dependencies for the display
-- Set up the application in `/opt/product-search-api`
-- Create systemd services for the API and display
-- Configure logging and permissions
-- Enable SPI interface
-- Start all services
-
-#### Managing the Service
-
-```bash
-# Check service status
-sudo systemctl status product-search-api
-
-# Start the service
-sudo systemctl start product-search-api
-
-# Stop the service
-sudo systemctl stop product-search-api
-
-# Restart the service
-sudo systemctl restart product-search-api
-
-# View logs
-sudo journalctl -u product-search-api -f
-```
-
-#### Updating the Application
-
-1. Stop the service:
-```bash
-sudo systemctl stop product-search-api
-```
-
-2. Navigate to the application directory:
-```bash
-cd /opt/product-search-api
-```
-
-3. Pull the latest changes:
-```bash
-git pull origin main
-```
-
-4. Install dependencies:
-```bash
-npm ci --production
-```
-
-5. Restart the service:
-```bash
-sudo systemctl restart product-search-api
-```
-
-## Display Features
-
-The 2.5-inch display shows:
-- API Status (Online/Offline)
-- Redis Connection Status
-- System Metrics:
-  - CPU Usage
-  - Memory Usage
-  - Disk Usage
-- Current Time
-
-### Managing the Display
-
-```bash
-# Check display service status
-sudo systemctl status api-display
-
-# Restart display service
-sudo systemctl restart api-display
-
-# View display logs
-sudo journalctl -u api-display -f
 ```
 
 ## Usage
@@ -215,11 +96,6 @@ Response:
 Logs are stored in the `logs` directory:
 - `logs/error.log`: Error-level logs
 - `logs/combined.log`: All logs
-
-You can also view system logs:
-```bash
-sudo journalctl -u product-search-api -f
-```
 
 ## Performance
 
