@@ -21,6 +21,11 @@ apt install -y nodejs
 echo "📦 Installing Redis..."
 apt install -y redis-server
 
+# Install screen dependencies
+echo "📦 Installing screen dependencies..."
+apt install -y python3-pip python3-pil python3-numpy
+pip3 install adafruit-circuitpython-rgb-display psutil requests redis
+
 # Configure Redis to start on boot
 echo "🔧 Configuring Redis..."
 systemctl enable redis-server
@@ -48,8 +53,8 @@ chown -R $SUDO_USER:$SUDO_USER logs
 echo "🔧 Setting up environment..."
 cp .env.example .env
 
-# Create systemd service
-echo "🔧 Creating systemd service..."
+# Create systemd service for API
+echo "🔧 Creating API systemd service..."
 cat > /etc/systemd/system/product-search-api.service << EOL
 [Unit]
 Description=Product Search API
@@ -67,13 +72,39 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 EOL
 
-# Reload systemd and start service
-echo "🔄 Starting service..."
+# Create systemd service for screen display
+echo "🔧 Creating screen display service..."
+cat > /etc/systemd/system/api-display.service << EOL
+[Unit]
+Description=API Status Display
+After=product-search-api.service
+
+[Service]
+Type=simple
+User=$SUDO_USER
+WorkingDirectory=/opt/product-search-api
+ExecStart=/usr/bin/python3 /opt/product-search-api/display.py
+Restart=always
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+# Enable SPI if not already enabled
+echo "🔧 Enabling SPI interface..."
+if ! grep -q "^dtparam=spi=on" /boot/firmware/config.txt; then
+    echo "dtparam=spi=on" >> /boot/firmware/config.txt
+fi
+
+# Reload systemd and start services
+echo "🔄 Starting services..."
 systemctl daemon-reload
-systemctl enable product-search-api
-systemctl start product-search-api
+systemctl enable product-search-api api-display
+systemctl start product-search-api api-display
 
 echo "✅ Installation complete!"
 echo "🌐 API should now be running on port 3000"
 echo "📝 Check logs at /opt/product-search-api/logs/"
-echo "⚙️ Service status: systemctl status product-search-api" 
+echo "⚙️ Service status: systemctl status product-search-api"
+echo "🖥️ Display status: systemctl status api-display" 

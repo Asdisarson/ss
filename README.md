@@ -55,28 +55,45 @@ DK_API_KEY=your-api-key
 sudo apt update && sudo apt upgrade -y
 ```
 
-2. Clone the repository:
+2. Connect the 2.5-inch Display:
+   - Connect the display to the Raspberry Pi's GPIO pins:
+     ```
+     Display   ->  Raspberry Pi
+     VCC       ->  3.3V (Pin 1)
+     GND       ->  Ground (Pin 6)
+     CS        ->  CE0 (Pin 24)
+     RESET     ->  GPIO24 (Pin 18)
+     DC        ->  GPIO25 (Pin 22)
+     MOSI      ->  MOSI (Pin 19)
+     SCK       ->  SCLK (Pin 23)
+     LED       ->  3.3V (Pin 17)
+     MISO      ->  MISO (Pin 21)
+     ```
+
+3. Clone the repository:
 ```bash
 git clone [repository-url]
 cd [project-directory]
 ```
 
-3. Make the installation script executable:
+4. Make the installation script executable:
 ```bash
 chmod +x install.sh
 ```
 
-4. Run the installation script:
+5. Run the installation script:
 ```bash
 sudo ./install.sh
 ```
 
 The script will:
 - Install Node.js and Redis
+- Install Python dependencies for the display
 - Set up the application in `/opt/product-search-api`
-- Create a systemd service for automatic startup
+- Create systemd services for the API and display
 - Configure logging and permissions
-- Start the service
+- Enable SPI interface
+- Start all services
 
 #### Managing the Service
 
@@ -122,6 +139,30 @@ npm ci --production
 5. Restart the service:
 ```bash
 sudo systemctl restart product-search-api
+```
+
+## Display Features
+
+The 2.5-inch display shows:
+- API Status (Online/Offline)
+- Redis Connection Status
+- System Metrics:
+  - CPU Usage
+  - Memory Usage
+  - Disk Usage
+- Current Time
+
+### Managing the Display
+
+```bash
+# Check display service status
+sudo systemctl status api-display
+
+# Restart display service
+sudo systemctl restart api-display
+
+# View display logs
+sudo journalctl -u api-display -f
 ```
 
 ## Usage
