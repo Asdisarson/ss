@@ -1,72 +1,58 @@
 #!/bin/bash
 
+# Exit on error
+set -e
+
 # Configuration
+PI_USER="nexus"
+PI_HOST="dk-nexus.api.local"
+PI_PASSWORD="Ashnazg91"
 APP_NAME="ss"
-APP_DIR="/home/nexus/apps/ss"
-REPO_URL="git@github.com:yourusername/ss.git"  # Replace with your repo URL
-NODE_VERSION="18"
+REMOTE_DIR="/home/nexus/apps/$APP_NAME"
 
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-echo -e "${GREEN}Starting deployment of ${APP_NAME}...${NC}"
-
-# Create app directory if it doesn't exist
-mkdir -p $APP_DIR
-
-# Install Node.js if not installed
-if ! command -v node &> /dev/null; then
-    echo -e "${GREEN}Installing Node.js...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | sudo -E bash -
-    sudo apt-get install -y nodejs
-fi
-
-# Install Redis if not installed
-if ! command -v redis-server &> /dev/null; then
-    echo -e "${GREEN}Installing Redis...${NC}"
+# Check if sshpass is installed
+if ! command -v sshpass &> /dev/null; then
+    echo "Installing sshpass..."
     sudo apt-get update
-    sudo apt-get install -y redis-server
-    sudo systemctl enable redis-server
-    sudo systemctl start redis-server
+    sudo apt-get install -y sshpass
 fi
 
-# Install PM2 if not installed
-if ! command -v pm2 &> /dev/null; then
-    echo -e "${GREEN}Installing PM2...${NC}"
-    sudo npm install -g pm2
-fi
+# Create deploy directory
+echo "Preparing deployment package..."
+DEPLOY_DIR="$(pwd)/deploy/tmp"
+rm -rf "$DEPLOY_DIR"
+mkdir -p "$DEPLOY_DIR"
 
-# Copy application files
-echo -e "${GREEN}Copying application files...${NC}"
-rsync -av --exclude='node_modules' --exclude='.git' --exclude='logs' --exclude='*.sqlite' ./ $APP_DIR/
+# Copy necessary files
+cp -r src package.json package-lock.json .env.example deploy/install.sh "$DEPLOY_DIR/"
 
-# Set up environment file
-echo -e "${GREEN}Setting up environment file...${NC}"
-if [ ! -f "$APP_DIR/.env" ]; then
-    cp $APP_DIR/.env.example $APP_DIR/.env
-    echo "Please edit $APP_DIR/.env with your configuration"
-fi
+# Make scripts executable
+chmod +x "$DEPLOY_DIR/install.sh"
 
-# Install dependencies
-echo -e "${GREEN}Installing dependencies...${NC}"
-cd $APP_DIR
-npm install --production
+# Create archive
+ARCHIVE_NAME="$APP_NAME.tar.gz"
+cd "$DEPLOY_DIR"
+tar czf "../$ARCHIVE_NAME" .
+cd ..
 
-# Setup PM2 process
-echo -e "${GREEN}Setting up PM2 process...${NC}"
-pm2 delete $APP_NAME 2>/dev/null || true
-pm2 start src/server.js --name $APP_NAME --env production
+# Copy files to Raspberry Pi
+echo "Copying files to Raspberry Pi..."
+sshpass -p "$PI_PASSWORD" scp -o StrictHostKeyChecking=no "$ARCHIVE_NAME" "$PI_USER@$PI_HOST:~/"
 
-# Save PM2 process list
-pm2 save
+# Execute installation script
+echo "Installing application on Raspberry Pi..."
+sshpass -p "$PI_PASSWORD" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" << EOF
+    cd ~
+    mkdir -p apps/$APP_NAME
+    tar xzf $ARCHIVE_NAME -C apps/$APP_NAME
+    cd apps/$APP_NAME
+    chmod +x install.sh
+    ./install.sh
+EOF
 
-# Setup PM2 startup script
-sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u nexus --hp /home/nexus
+# Clean up
+echo "Cleaning up..."
+rm -rf "$DEPLOY_DIR" "$ARCHIVE_NAME"
 
-echo -e "${GREEN}Deployment completed!${NC}"
-echo -e "Application is running at http://192.168.112.118:3000"
-echo -e "To view logs: pm2 logs ${APP_NAME}"
-echo -e "To restart: pm2 restart ${APP_NAME}"
-echo -e "To stop: pm2 stop ${APP_NAME}" 
+echo "Deployment completed!"
+echo "The application should now be accessible at http://$PI_HOST" 
