@@ -209,31 +209,84 @@
             return 'stock-none';
         }
 
+        function getWarehouseStock(warehouseData, warehouseCode) {
+            if (!warehouseData) return 0;
+            try {
+                const warehouses = JSON.parse(warehouseData);
+                const warehouse = warehouses.find(w => w.Warehouse === warehouseCode);
+                return warehouse ? warehouse.QuantityInStock : 0;
+            } catch (error) {
+                console.error('Error parsing warehouse data:', error);
+                return 0;
+            }
+        }
+
+        function getWarehouseLocation(warehouseData, warehouseCode) {
+            if (!warehouseData) return '';
+            try {
+                const warehouses = JSON.parse(warehouseData);
+                const warehouse = warehouses.find(w => w.Warehouse === warehouseCode);
+                return warehouse?.LocationInWarehouse || '';
+            } catch (error) {
+                console.error('Error parsing warehouse data:', error);
+                return '';
+            }
+        }
+
+        function formatCategories(categories) {
+            if (!categories) return '';
+            try {
+                const cats = JSON.parse(categories);
+                return cats.map(cat => {
+                    const subCats = cat.SubCategories?.map(sub => sub.Description).join(', ');
+                    return `${cat.Description}${subCats ? ` (${subCats})` : ''}`;
+                }).join(' | ');
+            } catch (error) {
+                console.error('Error parsing categories:', error);
+                return '';
+            }
+        }
+
         async function performSearch() {
             const searchTerm = document.getElementById('searchInput').value;
             const resultsBody = document.getElementById('resultsBody');
             
             try {
-                const response = await fetch(`/api/search?q=${encodeURIComponent(searchTerm)}`);
+                const response = await fetch(`/api/search?query=${encodeURIComponent(searchTerm)}`);
                 const data = await response.json();
                 
                 resultsBody.innerHTML = '';
                 
-                if (data.length === 0) {
+                if (!Array.isArray(data) || data.length === 0) {
                     resultsBody.innerHTML = '<tr><td colspan="6" class="text-center">Engar niðurstöður fundust</td></tr>';
                     return;
                 }
 
                 data.forEach(product => {
                     const barcodes = JSON.parse(product.barcodes || '[]');
+                    const bg1Stock = getWarehouseStock(product.warehouse_data, 'bg1');
+                    const bg2Stock = getWarehouseStock(product.warehouse_data, 'bg2');
+                    const bg1Location = getWarehouseLocation(product.warehouse_data, 'bg1');
+                    const bg2Location = getWarehouseLocation(product.warehouse_data, 'bg2');
+                    const categories = formatCategories(product.categories);
+
                     const row = document.createElement('tr');
                     row.innerHTML = `
                         <td>${highlightText(product.item_code, searchTerm)}</td>
-                        <td>${highlightText(product.name, searchTerm)}</td>
+                        <td>
+                            <div>${highlightText(product.name, searchTerm)}</div>
+                            ${categories ? `<small class="text-muted">${categories}</small>` : ''}
+                        </td>
                         <td>${formatPrice(product.unit_price_with_tax)}</td>
                         <td>${barcodes.map(code => highlightText(code, searchTerm)).join(', ')}</td>
-                        <td class="${getStockClass(product.warehouse_glaesibaer)}">${product.warehouse_glaesibaer || 0}</td>
-                        <td class="${getStockClass(product.warehouse_kringlan)}">${product.warehouse_kringlan || 0}</td>
+                        <td class="${getStockClass(bg1Stock)}">
+                            ${bg1Stock}
+                            ${bg1Location ? `<br><small class="text-muted">${bg1Location}</small>` : ''}
+                        </td>
+                        <td class="${getStockClass(bg2Stock)}">
+                            ${bg2Stock}
+                            ${bg2Location ? `<br><small class="text-muted">${bg2Location}</small>` : ''}
+                        </td>
                     `;
                     resultsBody.appendChild(row);
                 });

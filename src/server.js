@@ -6,6 +6,10 @@ const FormData = require('form-data');
 const fs = require('fs');
 const Redis = require('ioredis');
 const path = require('path');
+const zlib = require('zlib');
+const { promisify } = require('util');
+const gzip = promisify(zlib.gzip);
+const ungzip = promisify(zlib.gunzip);
 require('dotenv').config();
 
 // Logging utility
@@ -52,7 +56,7 @@ async function fetchAndStoreProducts(db) {
         const config = {
             method: 'get',
             maxBodyLength: Infinity,
-            url: 'https://api.dkplus.is/api/v1/Product',
+            url: `${process.env.DK_API_URL}Product`,
             headers: {
                 Authorization: `Bearer ${process.env.DK_API_KEY}`,
                 ...data.getHeaders(),
@@ -79,43 +83,63 @@ async function fetchAndStoreProducts(db) {
 
                     const stmt = db.prepare(`
                         INSERT INTO products (
-                            item_code, 
-                            name, 
-                            unit_price_with_tax, 
-                            barcodes, 
-                            warehouse_glaesibaer, 
-                            warehouse_kringlan
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            record_id,
+                            item_code,
+                            name,
+                            description,
+                            description2,
+                            extra_desc1,
+                            extra_desc2,
+                            unit_price_with_tax,
+                            unit_price1,
+                            unit_price2,
+                            unit_price3,
+                            purchase_price,
+                            cost_price,
+                            currency_code,
+                            barcodes,
+                            categories,
+                            warehouse_data,
+                            inactive,
+                            allow_discount,
+                            max_discount_allowed,
+                            record_created,
+                            record_modified
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     `);
 
                     let insertCount = 0;
                     products.forEach((product) => {
                         try {
-                            const description = product.Description || '';
-                            const description2 = product.Description2 || '';
-                            const extraDesc1 = product.ExtraDesc1 || '';
-
-                            let name = description;
-                            if (description2) {
-                                name = `${description} ${description2}`.trim();
-                            } else if (extraDesc1) {
-                                name = `${extraDesc1}`.trim();
-                            }
-
-                            name = name.trim() || product.ItemCode || 'Unknown Product';
-                            const barcodes = JSON.stringify(product.Barcodes?.map((b) => b.Barcode) || []);
-                            const warehouseBG1 = product.Warehouses?.find((w) => w.Warehouse == 'bg1')
-                                ?.QuantityInStock || 0;
-                            const warehouseBG2 = product.Warehouses?.find((w) => w.Warehouse == 'bg2')
-                                ?.QuantityInStock || 0;
+                            const name = [
+                                product.Description,
+                                product.Description2,
+                                product.ExtraDesc1
+                            ].filter(Boolean).join(' ').trim() || product.ItemCode || 'Unknown Product';
 
                             stmt.run(
+                                product.RecordID || null,
                                 product.ItemCode || '',
                                 name,
+                                product.Description || null,
+                                product.Description2 || null,
+                                product.ExtraDesc1 || null,
+                                product.ExtraDesc2 || null,
                                 product.UnitPrice1WithTax || 0,
-                                barcodes,
-                                warehouseBG1,
-                                warehouseBG2,
+                                product.UnitPrice1 || 0,
+                                product.UnitPrice2 || 0,
+                                product.UnitPrice3 || 0,
+                                product.PurchasePrice || 0,
+                                product.CostPrice || 0,
+                                product.CurrencyCode || 'ISK',
+                                JSON.stringify(product.Barcodes?.map((b) => b.Barcode) || []),
+                                JSON.stringify(product.Categories || []),
+                                JSON.stringify(product.Warehouses || []),
+                                product.Inactive ? 1 : 0,
+                                product.AllowDiscount ? 1 : 0,
+                                product.MaxDiscountAllowed || 0,
+                                product.RecordCreated || null,
+                                product.RecordModified || null
                             );
                             insertCount += 1;
                         } catch (error) {
@@ -148,16 +172,32 @@ async function initializeDatabase(db, isNewDatabase) {
     return new Promise((resolve, reject) => {
         db.serialize(() => {
             try {
-                // Create products table
+                // Create products table with expanded fields
                 db.run(`
                     CREATE TABLE IF NOT EXISTS products (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        record_id INTEGER,
                         item_code TEXT UNIQUE NOT NULL,
                         name TEXT NOT NULL,
+                        description TEXT,
+                        description2 TEXT,
+                        extra_desc1 TEXT,
+                        extra_desc2 TEXT,
                         unit_price_with_tax REAL,
+                        unit_price1 REAL,
+                        unit_price2 REAL,
+                        unit_price3 REAL,
+                        purchase_price REAL,
+                        cost_price REAL,
+                        currency_code TEXT,
                         barcodes TEXT,
-                        warehouse_glaesibaer INTEGER DEFAULT 0,
-                        warehouse_kringlan INTEGER DEFAULT 0,
+                        categories TEXT,
+                        warehouse_data TEXT,
+                        inactive BOOLEAN DEFAULT 0,
+                        allow_discount BOOLEAN DEFAULT 1,
+                        max_discount_allowed REAL,
+                        record_created DATETIME,
+                        record_modified DATETIME,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 `, (err) => {
@@ -173,6 +213,7 @@ async function initializeDatabase(db, isNewDatabase) {
                 db.run('CREATE INDEX IF NOT EXISTS idx_item_code ON products(item_code)');
                 db.run('CREATE INDEX IF NOT EXISTS idx_name ON products(name)');
                 db.run('CREATE INDEX IF NOT EXISTS idx_barcodes ON products(barcodes)');
+                db.run('CREATE INDEX IF NOT EXISTS idx_categories ON products(categories)');
 
                 if (isNewDatabase) {
                     console.log('New database detected, fetching initial products...');
@@ -200,24 +241,116 @@ const app = express();
 const port = process.env.PORT || 3000;
 const DB_FILE = process.env.DB_FILE || './database.sqlite';
 
+// Cache configuration
+const CACHE_CONFIG = {
+  PREFIX: 'ss:',
+  DEFAULT_TTL: 300, // 5 minutes
+  COMPRESSED_MIN_SIZE: 1024, // Compress if larger than 1KB
+  CATEGORIES: {
+    PRODUCT: 'product:',
+    SEARCH: 'search:',
+    INVENTORY: 'inventory:'
+  }
+};
+
 // Redis setup with error handling
 const redis = new Redis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
-    retryStrategy: (times) => {
-        const delay = Math.min(times * 50, 2000);
-        log('warn', `Redis connection attempt ${times} failed. Retrying in ${delay}ms`);
-        return delay;
-    },
-    maxRetriesPerRequest: 3,
+  host: process.env.REDIS_HOST || 'localhost',
+  port: process.env.REDIS_PORT || 6379,
+  retryStrategy: (times) => {
+    const delay = Math.min(times * 50, 2000);
+    log('warn', `Redis connection attempt ${times} failed. Retrying in ${delay}ms`);
+    return delay;
+  },
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: true,
+  autoResendUnfulfilledCommands: true,
+  reconnectOnError: (err) => {
+    const targetError = 'READONLY';
+    if (err.message.includes(targetError)) {
+      return true;
+    }
+    return false;
+  }
 });
 
+// Redis helper functions
+const cacheUtils = {
+  generateKey: (category, identifier) => {
+    return `${CACHE_CONFIG.PREFIX}${category}${identifier}`;
+  },
+
+  async set(key, data, ttl = CACHE_CONFIG.DEFAULT_TTL) {
+    try {
+      const stringData = JSON.stringify(data);
+      let finalData = stringData;
+
+      // Compress if data is large
+      if (stringData.length > CACHE_CONFIG.COMPRESSED_MIN_SIZE) {
+        const compressed = await gzip(stringData);
+        finalData = compressed.toString('base64');
+        key = `${key}:compressed`;
+      }
+
+      await redis.setex(key, ttl, finalData);
+      log('debug', `Cache set: ${key}`);
+    } catch (error) {
+      log('error', `Cache set error for key ${key}:`, error);
+    }
+  },
+
+  async get(key) {
+    try {
+      const data = await redis.get(key);
+      if (!data) {
+        // Try compressed version
+        const compressedData = await redis.get(`${key}:compressed`);
+        if (compressedData) {
+          const buffer = Buffer.from(compressedData, 'base64');
+          const decompressed = await ungzip(buffer);
+          return JSON.parse(decompressed.toString());
+        }
+        return null;
+      }
+      return JSON.parse(data);
+    } catch (error) {
+      log('error', `Cache get error for key ${key}:`, error);
+      return null;
+    }
+  },
+
+  async invalidate(key) {
+    try {
+      await Promise.all([
+        redis.del(key),
+        redis.del(`${key}:compressed`)
+      ]);
+      log('debug', `Cache invalidated: ${key}`);
+    } catch (error) {
+      log('error', `Cache invalidation error for key ${key}:`, error);
+    }
+  }
+};
+
+// Redis event handlers
 redis.on('error', (err) => {
-    log('error', 'Redis error:', err);
+  log('error', 'Redis error:', err);
 });
 
 redis.on('connect', () => {
-    log('info', 'Successfully connected to Redis');
+  log('info', 'Successfully connected to Redis');
+});
+
+redis.on('ready', () => {
+  log('info', 'Redis is ready to accept commands');
+});
+
+redis.on('close', () => {
+  log('warn', 'Redis connection closed');
+});
+
+redis.on('reconnecting', () => {
+  log('warn', 'Redis reconnecting...');
 });
 
 // Track last update time
@@ -337,147 +470,48 @@ app.get('/api/last-update', (req, res) => {
 });
 
 // Search endpoint
-app.get('/api/search', (req, res) => {
-    const searchTerm = req.query.q?.trim() || '';
-    const cacheKey = `search:${searchTerm}`;
-
-    // Only search if we have 2 or more characters
-    if (searchTerm.length < 2) {
-        return res.json([]);
+app.get('/api/search', async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query) {
+      return res.status(400).json({ error: 'Query parameter is required' });
     }
 
-    redis.get(cacheKey, (err, cachedResult) => {
+    const cacheKey = cacheUtils.generateKey(CACHE_CONFIG.CATEGORIES.SEARCH, query);
+    const cachedResult = await cacheUtils.get(cacheKey);
+
+    if (cachedResult) {
+      log('info', `Cache hit for search: ${query}`);
+      return res.json(cachedResult);
+    }
+
+    // Simplified query without JSON functions
+    db.all(
+      `SELECT * FROM products 
+       WHERE name LIKE ? 
+         OR item_code LIKE ? 
+         OR barcodes LIKE ?
+         OR description LIKE ?
+         OR description2 LIKE ?
+         OR extra_desc1 LIKE ?
+         OR extra_desc2 LIKE ?
+       LIMIT 100`,
+      Array(7).fill(`%${query}%`),
+      async (err, rows) => {
         if (err) {
-            log('error', 'Redis error:', err);
-        } else if (cachedResult) {
-            return res.json(JSON.parse(cachedResult));
+          log('error', 'Database error:', err);
+          return res.status(500).json({ error: 'Database error' });
         }
 
-        // Split search terms and create pattern variations for fuzzy matching
-        const terms = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
-        const fuzzyTerms = terms.map(term => {
-            // Create variations with 1 character difference
-            const variations = [];
-            for (let i = 0; i < term.length; i++) {
-                variations.push(term.slice(0, i) + '%' + term.slice(i));
-            }
-            return variations;
-        }).flat();
-
-        // Build dynamic query with enhanced scoring
-        const query = `
-            WITH scored_products AS (
-                SELECT 
-                    item_code,
-                    name,
-                    unit_price_with_tax,
-                    barcodes,
-                    warehouse_glaesibaer,
-                    warehouse_kringlan,
-                    (
-                        CASE
-                            -- Exact matches (highest priority)
-                            WHEN LOWER(item_code) = LOWER(?) THEN 2000
-                            WHEN barcodes LIKE ? THEN 1500
-                            WHEN LOWER(name) = LOWER(?) THEN 1000
-                            -- Starts with matches
-                            WHEN LOWER(item_code) LIKE LOWER(?) || '%' THEN 800
-                            WHEN LOWER(name) LIKE LOWER(?) || '%' THEN 600
-                            -- Word boundary matches in name
-                            WHEN LOWER(name) LIKE '% ' || LOWER(?) || ' %' THEN 500
-                            WHEN LOWER(name) LIKE '% ' || LOWER(?) || '%' THEN 450
-                            WHEN LOWER(name) LIKE '%' || LOWER(?) || ' %' THEN 450
-                            -- Contains matches
-                            WHEN LOWER(item_code) LIKE '%' || LOWER(?) || '%' THEN 400
-                            WHEN barcodes LIKE '%' || ? || '%' THEN 300
-                            WHEN LOWER(name) LIKE '%' || LOWER(?) || '%' THEN 200
-                            -- Fuzzy matches
-                            ${fuzzyTerms.map(() => `
-                                WHEN LOWER(item_code) LIKE ? THEN 100
-                                WHEN LOWER(name) LIKE ? THEN 50
-                            `).join('\n')}
-                            ELSE 0
-                        END +
-                        -- Additional points for each term match in name
-                        CASE 
-                            WHEN ${terms.map(() => `LOWER(name) LIKE '%' || LOWER(?) || '%'`).join(' AND ')}
-                            THEN ${terms.length * 100}
-                            ELSE 0
-                        END
-                    ) as base_score,
-                    -- Store match positions for highlighting
-                    LOWER(name) as name_lower
-                FROM products
-                WHERE 
-                    LOWER(item_code) LIKE '%' || LOWER(?) || '%'
-                    OR barcodes LIKE '%' || ? || '%'
-                    OR LOWER(name) LIKE '%' || LOWER(?) || '%'
-                    ${fuzzyTerms.map(() => `
-                        OR LOWER(item_code) LIKE ?
-                        OR LOWER(name) LIKE ?
-                    `).join('\n')}
-                    -- Additional term-specific matches
-                    OR (${terms.map(() => `LOWER(name) LIKE '%' || LOWER(?) || '%'`).join(' OR ')})
-            )
-            SELECT 
-                item_code,
-                name,
-                unit_price_with_tax,
-                barcodes,
-                warehouse_glaesibaer,
-                warehouse_kringlan,
-                base_score as relevance,
-                name_lower
-            FROM scored_products
-            WHERE base_score > 0
-            ORDER BY base_score DESC, item_code ASC
-            LIMIT 100`;
-
-        // Prepare parameters for the query
-        const baseParams = [
-            searchTerm, // Exact item_code match
-            `%"${searchTerm}"%`, // Exact barcode match
-            searchTerm, // Exact name match
-            searchTerm, // Starts with item_code
-            searchTerm, // Starts with name
-            searchTerm, // Word boundary start
-            searchTerm, // Word boundary end
-            searchTerm, // Word boundary middle
-            searchTerm, // Contains item_code
-            searchTerm, // Contains barcode
-            searchTerm, // Contains name
-        ];
-
-        // Add fuzzy match parameters
-        const fuzzyParams = fuzzyTerms.flatMap(term => [term, term]);
-
-        // Add term match bonus parameters
-        const termParams = terms.map(term => term);
-
-        // Add WHERE clause parameters
-        const whereParams = [
-            searchTerm, // LIKE item_code
-            searchTerm, // LIKE barcode
-            searchTerm, // LIKE name
-            ...fuzzyTerms.flatMap(term => [term, term]), // Fuzzy matches
-            ...terms // Term-specific matches
-        ];
-
-        const params = [...baseParams, ...fuzzyParams, ...termParams, ...whereParams];
-        
-        db.all(query, params, (dbErr, rows) => {
-            if (dbErr) {
-                log('error', 'Search error:', dbErr);
-                return res.status(500).json({ error: 'Database error' });
-            }
-
-            // Cache results for 5 minutes
-            redis.setex(cacheKey, 300, JSON.stringify(rows))
-                .catch((redisErr) => log('error', 'Redis cache error:', redisErr));
-
-            res.json(rows);
-        });
-    });
+        // Cache the results
+        await cacheUtils.set(cacheKey, rows);
+        res.json(rows);
+      }
+    );
+  } catch (error) {
+    log('error', 'Search error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Start server
@@ -486,15 +520,27 @@ app.listen(port, () => {
 });
 
 // Process termination handling
-process.on('SIGTERM', () => {
-    log('info', 'SIGTERM received. Shutting down gracefully...');
-    db.close(() => {
-        log('info', 'Database connection closed.');
+process.on('SIGTERM', async () => {
+  try {
+    await Promise.all([
+      new Promise((resolve) => {
         redis.quit(() => {
-            log('info', 'Redis connection closed.');
-            process.exit(0);
+          log('info', 'Redis connection closed.');
+          resolve();
         });
-    });
+      }),
+      new Promise((resolve) => {
+        db.close(() => {
+          log('info', 'Database connection closed.');
+          resolve();
+        });
+      })
+    ]);
+    process.exit(0);
+  } catch (error) {
+    log('error', 'Error during shutdown:', error);
+    process.exit(1);
+  }
 });
 
 // Export for testing
