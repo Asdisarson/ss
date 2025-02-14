@@ -2,6 +2,7 @@
 
 import time
 import math
+import colorsys
 import board
 import digitalio
 import psutil
@@ -49,42 +50,112 @@ except OSError:
     font_small = ImageFont.load_default()
     font_mono = ImageFont.load_default()
 
-# Modern color palette
-BACKGROUND = (10, 12, 16)
-ACCENT1 = (41, 128, 185)  # Blue
-ACCENT2 = (46, 204, 113)  # Green
-ACCENT3 = (231, 76, 60)   # Red
-ACCENT4 = (241, 196, 15)  # Yellow
-TEXT_PRIMARY = (236, 240, 241)
-TEXT_SECONDARY = (189, 195, 199)
+# Cyberpunk color palette
+NEON_PINK = (255, 16, 240)
+NEON_BLUE = (0, 240, 255)
+NEON_PURPLE = (128, 0, 255)
+CYBER_YELLOW = (255, 255, 0)
+CYBER_GREEN = (0, 255, 160)
+CYBER_RED = (255, 0, 80)
+DARK_BG = (8, 8, 16)
+DARKER_BG = (4, 4, 8)
 
 # Animation variables
 animation_frame = 0
 loading_angle = 0
+wave_offset = 0
+
+def get_rainbow_color(offset):
+    """Generate shifting rainbow colors"""
+    hue = (offset % 360) / 360.0
+    rgb = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+    return tuple(int(x * 255) for x in rgb)
+
+def draw_glowing_line(x1, y1, x2, y2, color, width=1):
+    """Draw a line with a glow effect"""
+    # Draw the main line
+    draw.line((x1, y1, x2, y2), fill=color, width=width)
+    
+    # Draw the glow
+    glow_color = tuple(max(0, min(255, c // 3)) for c in color)
+    for i in range(1, 3):
+        draw.line((x1, y1+i, x2, y2+i), fill=glow_color, width=width)
+        draw.line((x1, y1-i, x2, y2-i), fill=glow_color, width=width)
+
+def draw_cyber_box(x, y, width, height, color, title=""):
+    """Draw a cyberpunk-style box with animated corners"""
+    global animation_frame
+    
+    # Calculate corner animation
+    corner_len = 10
+    corner_pulse = abs(math.sin(animation_frame * 0.1)) * 0.5 + 0.5
+    corner_color = tuple(int(c * corner_pulse) for c in color)
+    
+    # Draw corners
+    for cx, cy in [(x, y), (x+width, y), (x, y+height), (x+width, y+height)]:
+        draw.line((cx-corner_len, cy, cx+corner_len, cy), fill=corner_color, width=1)
+        draw.line((cx, cy-corner_len, cx, cy+corner_len), fill=corner_color, width=1)
+    
+    # Draw title if provided
+    if title:
+        text_width = font_small.getlength(title)
+        draw.rectangle((x+5, y-10, x+text_width+15, y+2), fill=DARKER_BG)
+        draw.text((x+10, y-8), title, font=font_small, fill=color)
 
 def draw_loading_circle(x, y, size, progress, color):
-    """Draw a circular progress indicator"""
+    """Draw an advanced loading circle with glow effect"""
     global loading_angle
     loading_angle = (loading_angle + 6) % 360
     start_angle = loading_angle
     end_angle = start_angle + (360 * progress)
     
-    # Draw background circle
-    draw.arc((x - size, y - size, x + size, y + size), 0, 360, 
-             fill=(color[0]//3, color[1]//3, color[2]//3), width=3)
+    # Draw outer glow
+    glow_color = tuple(max(0, min(255, c // 4)) for c in color)
+    for i in range(2):
+        draw.arc((x-size-i, y-size-i, x+size+i, y+size+i), 
+                start_angle, end_angle, fill=glow_color, width=4)
     
-    # Draw progress arc
-    draw.arc((x - size, y - size, x + size, y + size), start_angle, end_angle, 
-             fill=color, width=3)
+    # Draw main arc
+    draw.arc((x-size, y-size, x+size, y+size), 
+            start_angle, end_angle, fill=color, width=3)
 
 def draw_progress_bar(x, y, width, height, progress, color):
-    """Draw a stylish progress bar"""
-    # Background
-    draw.rectangle((x, y, x + width, y + height), fill=(color[0]//3, color[1]//3, color[2]//3))
-    # Progress
-    bar_width = int(width * progress)
-    if bar_width > 0:
-        draw.rectangle((x, y, x + bar_width, y + height), fill=color)
+    """Draw a cyberpunk-style progress bar"""
+    # Background with scanline effect
+    for i in range(height):
+        if i % 2 == 0:
+            draw.line((x, y+i, x+width, y+i), 
+                     fill=(color[0]//8, color[1]//8, color[2]//8))
+    
+    # Progress with gradient and glow
+    if progress > 0:
+        bar_width = int(width * progress)
+        for i in range(bar_width):
+            gradient_factor = (math.sin(i/width * math.pi) * 0.3 + 0.7)
+            bar_color = tuple(int(c * gradient_factor) for c in color)
+            draw.line((x+i, y, x+i, y+height), fill=bar_color)
+
+def draw_status_box(x, y, title, status, color):
+    """Draw a cyberpunk-style status box"""
+    box_width = 140
+    box_height = 50
+    
+    # Draw background with scanlines
+    for i in range(box_height):
+        if i % 2 == 0:
+            draw.line((x, y+i, x+box_width, y+i), fill=DARKER_BG)
+    
+    # Draw cyber box
+    draw_cyber_box(x, y, box_width, box_height, color, title)
+    
+    # Draw status with pulsing effect
+    pulse = abs(math.sin(animation_frame * 0.1)) * 0.3 + 0.7
+    status_color = tuple(int(c * pulse) for c in (CYBER_GREEN if status else CYBER_RED))
+    
+    icon = "⬤" if status else "⭘"
+    status_text = "ONLINE" if status else "OFFLINE"
+    draw.text((x+10, y+28), icon, font=font, fill=status_color)
+    draw.text((x+35, y+28), status_text, font=font_small, fill=status_color)
 
 def get_api_status():
     try:
@@ -106,91 +177,87 @@ def get_system_info():
     disk = psutil.disk_usage('/').percent
     return cpu, memory, disk
 
-def draw_status_box(x, y, title, status, color):
-    """Draw a modern status box with animation"""
-    box_width = 140
-    box_height = 50
-    radius = 10
-    
-    # Draw rounded rectangle
-    draw.rounded_rectangle((x, y, x + box_width, y + box_height), radius, fill=(30, 33, 41))
-    
-    # Draw title
-    draw.text((x + 10, y + 8), title, font=font_small, fill=TEXT_SECONDARY)
-    
-    # Draw status with icon
-    icon = "●" if status else "○"
-    status_text = "ONLINE" if status else "OFFLINE"
-    draw.text((x + 10, y + 28), icon, font=font, fill=color if status else ACCENT3)
-    draw.text((x + 30, y + 28), status_text, font=font_small, fill=color if status else ACCENT3)
-
 def update_display():
-    global animation_frame
+    global animation_frame, wave_offset
     animation_frame = (animation_frame + 1) % 60
+    wave_offset = (wave_offset + 2) % width
 
-    # Clear the image with a gradient background
+    # Draw cyberpunk background with wave effect
     for y in range(height):
+        wave = math.sin((y + wave_offset) * 0.05) * 5
+        color_shift = abs(math.sin(y * 0.01 + animation_frame * 0.1))
         color = (
-            10 + int(y/height * 5),
-            12 + int(y/height * 5),
-            16 + int(y/height * 5)
+            int(8 + wave + color_shift * 4),
+            int(8 + wave),
+            int(16 + wave + color_shift * 8)
         )
         draw.line((0, y, width, y), fill=color)
 
-    # Get statuses and metrics
+    # Draw grid effect
+    for x in range(0, width, 20):
+        alpha = abs(math.sin((x + wave_offset) * 0.05)) * 0.3
+        grid_color = tuple(int(c * alpha) for c in NEON_BLUE)
+        draw.line((x, 0, x, height), fill=grid_color)
+
+    # Get system status
     api_status = get_api_status()
     redis_status = get_redis_status()
     cpu, memory, disk = get_system_info()
 
-    # Draw decorative header
-    draw.rectangle((0, 0, width, 50), fill=(15, 18, 23))
-    draw.text((10, 10), "Product Search API", font=font_title, fill=ACCENT1)
+    # Draw header with rainbow effect
+    rainbow_color = get_rainbow_color(animation_frame * 2)
+    draw.rectangle((0, 0, width, 50), fill=DARKER_BG)
+    draw_glowing_line(0, 50, width, 50, rainbow_color, 2)
     
+    title_color = get_rainbow_color(animation_frame * 2 + 180)
+    draw.text((10, 10), "Product Search API", font=font_title, fill=title_color)
+
     # Draw status boxes
-    draw_status_box(10, 60, "API Status", api_status, ACCENT2)
-    draw_status_box(160, 60, "Redis", redis_status, ACCENT2)
+    draw_status_box(10, 60, "API Status", api_status, NEON_BLUE)
+    draw_status_box(160, 60, "Redis", redis_status, NEON_PURPLE)
 
     # System metrics section
     y = 130
-    draw.text((10, y), "SYSTEM METRICS", font=font_small, fill=TEXT_SECONDARY)
+    section_title = "SYSTEM METRICS"
+    draw.text((10, y), section_title, font=font_small, fill=NEON_PINK)
+    draw_glowing_line(10, y+20, 10+font_small.getlength(section_title), y+20, NEON_PINK)
+
+    # Draw metrics with cyber style
     y += 25
+    metrics = [
+        ("CPU", cpu, NEON_BLUE),
+        ("RAM", memory, NEON_PURPLE),
+        ("DISK", disk, CYBER_GREEN)
+    ]
 
-    # CPU Usage with animated circle
-    draw_loading_circle(35, y + 15, 15, cpu/100, ACCENT1)
-    draw.text((60, y), "CPU", font=font_small, fill=TEXT_PRIMARY)
-    draw_progress_bar(60, y + 20, 150, 6, cpu/100, ACCENT1)
-    draw.text((215, y), f"{cpu}%", font=font_mono, fill=TEXT_PRIMARY)
-    
-    # Memory Usage
-    y += 45
-    draw_loading_circle(35, y + 15, 15, memory/100, ACCENT4)
-    draw.text((60, y), "RAM", font=font_small, fill=TEXT_PRIMARY)
-    draw_progress_bar(60, y + 20, 150, 6, memory/100, ACCENT4)
-    draw.text((215, y), f"{memory}%", font=font_mono, fill=TEXT_PRIMARY)
+    for label, value, color in metrics:
+        draw_loading_circle(35, y + 15, 15, value/100, color)
+        draw.text((60, y), label, font=font_small, fill=color)
+        draw_progress_bar(60, y + 20, 150, 6, value/100, color)
+        
+        # Draw percentage with glow
+        value_text = f"{value}%"
+        draw.text((216, y), value_text, font=font_mono, fill=DARKER_BG)
+        draw.text((215, y), value_text, font=font_mono, fill=color)
+        
+        y += 45
 
-    # Disk Usage
-    y += 45
-    draw_loading_circle(35, y + 15, 15, disk/100, ACCENT2)
-    draw.text((60, y), "DISK", font=font_small, fill=TEXT_PRIMARY)
-    draw_progress_bar(60, y + 20, 150, 6, disk/100, ACCENT2)
-    draw.text((215, y), f"{disk}%", font=font_mono, fill=TEXT_PRIMARY)
-
-    # Draw time with pulsing effect
+    # Draw time with rainbow effect
     current_time = time.strftime("%H:%M:%S")
-    pulse = abs(math.sin(animation_frame * 0.1)) * 0.3 + 0.7
-    time_color = tuple(int(c * pulse) for c in TEXT_PRIMARY)
-    draw.text((width//2 - 50, height - 30), current_time, 
-              font=font_mono, fill=time_color)
+    time_color = get_rainbow_color(animation_frame * 3)
+    time_x = width//2 - font_mono.getlength(current_time)//2
+    draw.text((time_x+1, height-30), current_time, font=font_mono, fill=DARKER_BG)
+    draw.text((time_x, height-31), current_time, font=font_mono, fill=time_color)
 
     # Display the image
     disp.image(image)
 
 def main():
-    print("Starting API status display...")
+    print("Starting Cyberpunk API Display...")
     while True:
         try:
             update_display()
-            time.sleep(0.05)  # Shorter sleep for smoother animations
+            time.sleep(0.05)
         except Exception as e:
             print(f"Error updating display: {e}")
             time.sleep(1)
