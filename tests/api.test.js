@@ -23,21 +23,20 @@ const testProducts = [
     }
 ];
 
-beforeAll(async (done) => {
-    server = app.listen(0, async () => {
-        try {
-            await clearDatabase();
-            await seedDatabase(testProducts);
-            done();
-        } catch (error) {
-            done(error);
-        }
+beforeAll((done) => {
+    server = app.listen(0, () => {
+        clearDatabase()
+            .then(() => seedDatabase(testProducts))
+            .then(() => done())
+            .catch(done);
     });
 });
 
 afterAll((done) => {
     if (server) {
-        server.close(done);
+        server.close(() => {
+            done();
+        });
     } else {
         done();
     }
@@ -45,69 +44,84 @@ afterAll((done) => {
 
 describe('API Endpoints', () => {
     describe('GET /api/products', () => {
-        it('should return all products', async () => {
-            const res = await request(app)
+        it('should return all products', (done) => {
+            request(server)
                 .get('/api/products')
                 .expect('Content-Type', /json/)
-                .expect(200);
-
-            expect(Array.isArray(res.body)).toBeTruthy();
-            expect(res.body).toHaveLength(2);
-            expect(res.body[0]).toHaveProperty('item_code', 'TEST001');
-            expect(res.body[1]).toHaveProperty('item_code', 'TEST002');
+                .expect(200)
+                .end((err, res) => {
+                    if (err) return done(err);
+                    expect(Array.isArray(res.body)).toBeTruthy();
+                    expect(res.body).toHaveLength(2);
+                    expect(res.body[0]).toHaveProperty('item_code', 'TEST001');
+                    expect(res.body[1]).toHaveProperty('item_code', 'TEST002');
+                    done();
+                });
         });
     });
 
     describe('GET /api/products/search', () => {
-        it('should return empty results for empty query', async () => {
-            const res = await request(app)
+        it('should return empty results for empty query', (done) => {
+            request(server)
                 .get('/api/products/search')
                 .query({ q: '' })
                 .expect('Content-Type', /json/)
-                .expect(200);
-
-            expect(res.body).toEqual({
-                total: 0,
-                page: 1,
-                pageSize: 25,
-                totalPages: 0,
-                results: []
-            });
+                .expect(200)
+                .end((err, res) => {
+                    if (err) return done(err);
+                    expect(res.body).toEqual({
+                        total: 0,
+                        page: 1,
+                        pageSize: 25,
+                        totalPages: 0,
+                        results: [],
+                    });
+                    done();
+                });
         });
 
-        it('should return paginated results for valid query', async () => {
-            const res = await request(app)
+        it('should return paginated results for valid query', (done) => {
+            request(server)
                 .get('/api/products/search')
                 .query({ q: 'test', page: 1, pageSize: 10 })
                 .expect('Content-Type', /json/)
-                .expect(200);
-
-            expect(res.body).toHaveProperty('total', 2);
-            expect(res.body).toHaveProperty('page', 1);
-            expect(res.body).toHaveProperty('pageSize', 10);
-            expect(res.body).toHaveProperty('totalPages', 1);
-            expect(res.body.results).toHaveLength(2);
+                .expect(200)
+                .end((err, res) => {
+                    if (err) return done(err);
+                    expect(res.body).toHaveProperty('total', 2);
+                    expect(res.body).toHaveProperty('page', 1);
+                    expect(res.body).toHaveProperty('pageSize', 10);
+                    expect(res.body).toHaveProperty('totalPages', 1);
+                    expect(res.body.results).toHaveLength(2);
+                    done();
+                });
         });
 
-        it('should handle invalid page size', async () => {
-            const res = await request(app)
+        it('should handle invalid page size', (done) => {
+            request(server)
                 .get('/api/products/search')
                 .query({ q: 'test', pageSize: 999 })
                 .expect('Content-Type', /json/)
-                .expect(200);
-
-            expect(res.body.pageSize).toBe(25); // Default page size
+                .expect(200)
+                .end((err, res) => {
+                    if (err) return done(err);
+                    expect(res.body.pageSize).toBe(25); // Default page size
+                    done();
+                });
         });
 
-        it('should find products by specific terms', async () => {
-            const res = await request(app)
+        it('should find products by specific terms', (done) => {
+            request(server)
                 .get('/api/products/search')
                 .query({ q: 'blue shirt' })
                 .expect('Content-Type', /json/)
-                .expect(200);
-
-            expect(res.body.total).toBe(1);
-            expect(res.body.results[0]).toHaveProperty('item_code', 'TEST002');
+                .expect(200)
+                .end((err, res) => {
+                    if (err) return done(err);
+                    expect(res.body.total).toBe(1);
+                    expect(res.body.results[0]).toHaveProperty('item_code', 'TEST002');
+                    done();
+                });
         });
     });
 });

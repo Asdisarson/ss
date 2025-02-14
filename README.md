@@ -20,6 +20,8 @@ A high-performance REST API for product search and inventory management, featuri
 
 ## Installation
 
+### Standard Installation
+
 1. Clone the repository:
 ```bash
 git clone [repository-url]
@@ -44,6 +46,82 @@ REDIS_PORT=6379
 NODE_ENV=development
 LOG_LEVEL=info
 DK_API_KEY=your-api-key
+```
+
+### Raspberry Pi Installation (Ubuntu Server)
+
+1. Update your system:
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+
+2. Clone the repository:
+```bash
+git clone [repository-url]
+cd [project-directory]
+```
+
+3. Make the installation script executable:
+```bash
+chmod +x install.sh
+```
+
+4. Run the installation script:
+```bash
+sudo ./install.sh
+```
+
+The script will:
+- Install Node.js and Redis
+- Set up the application in `/opt/product-search-api`
+- Create a systemd service for automatic startup
+- Configure logging and permissions
+- Start the service
+
+#### Managing the Service
+
+```bash
+# Check service status
+sudo systemctl status product-search-api
+
+# Start the service
+sudo systemctl start product-search-api
+
+# Stop the service
+sudo systemctl stop product-search-api
+
+# Restart the service
+sudo systemctl restart product-search-api
+
+# View logs
+sudo journalctl -u product-search-api -f
+```
+
+#### Updating the Application
+
+1. Stop the service:
+```bash
+sudo systemctl stop product-search-api
+```
+
+2. Navigate to the application directory:
+```bash
+cd /opt/product-search-api
+```
+
+3. Pull the latest changes:
+```bash
+git pull origin main
+```
+
+4. Install dependencies:
+```bash
+npm ci --production
+```
+
+5. Restart the service:
+```bash
+sudo systemctl restart product-search-api
 ```
 
 ## Usage
@@ -96,6 +174,11 @@ Response:
 Logs are stored in the `logs` directory:
 - `logs/error.log`: Error-level logs
 - `logs/combined.log`: All logs
+
+You can also view system logs:
+```bash
+sudo journalctl -u product-search-api -f
+```
 
 ## Performance
 

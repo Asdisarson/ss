@@ -9,27 +9,188 @@ const winston = require('winston');
 const expressWinston = require('express-winston');
 require('dotenv').config();
 
+// Function declarations first
+async function fetchAndStoreProducts(db, logger) {
+    try {
+        logger.info('Starting product fetch from API');
+        const data = new FormData();
+        const config = {
+            method: 'get',
+            maxBodyLength: Infinity,
+            url: 'https://api.dkplus.is/api/v1/Product',
+            headers: {
+                Authorization: 'Bearer 9fd1c68e-64bc-4930-921e-5dd45d1344f6',
+                ...data.getHeaders(),
+            },
+            data,
+        };
+
+        const response = await axios.request(config);
+        const products = response.data;
+        logger.info(`Fetched ${products.length} products from API`);
+
+        return new Promise((resolve, reject) => {
+            db.serialize(() => {
+                db.run('BEGIN TRANSACTION');
+
+                db.run('DELETE FROM products', [], (deleteErr) => {
+                    if (deleteErr) {
+                        logger.error('Error clearing products:', deleteErr);
+                        db.run('ROLLBACK');
+                        reject(deleteErr);
+                        return;
+                    }
+                    logger.info('Cleared existing products');
+
+                    const stmt = db.prepare(`
+                        INSERT INTO products (
+                            item_code, 
+                            name, 
+                            unit_price_with_tax, 
+                            barcodes, 
+                            warehouse_glaesibaer, 
+                            warehouse_kringlan
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    `);
+
+                    let insertCount = 0;
+                    products.forEach((product) => {
+                        try {
+                            const description = product.Description || '';
+                            const description2 = product.Description2 || '';
+                            const extraDesc1 = product.ExtraDesc1 || '';
+
+                            let name = description;
+                            if (description2) {
+                                name = `${description} ${description2}`.trim();
+                            } else if (extraDesc1) {
+                                name = `${description} ${extraDesc1}`.trim();
+                            }
+
+                            name = name.trim() || product.ItemCode || 'Unknown Product';
+                            const barcodes = JSON.stringify(product.Barcodes?.map((b) => b.Barcode) || []);
+                            const warehouseBG1 = product.Warehouses?.find((w) => w.Warehouse === 'bg1')
+                                ?.QuantityInStock || 0;
+                            const warehouseBG2 = product.Warehouses?.find((w) => w.Warehouse === 'bg2')
+                                ?.QuantityInStock || 0;
+
+                            stmt.run(
+                                product.ItemCode || '',
+                                name,
+                                product.UnitPrice1WithTax || 0,
+                                barcodes,
+                                warehouseBG1,
+                                warehouseBG2,
+                            );
+                            insertCount += 1;
+                        } catch (error) {
+                            logger.error(`Error processing product ${product.ItemCode}:`, error);
+                        }
+                    });
+
+                    stmt.finalize();
+                    db.run('COMMIT', (commitErr) => {
+                        if (commitErr) {
+                            logger.error('Error committing transaction:', commitErr);
+                            db.run('ROLLBACK');
+                            reject(commitErr);
+                        } else {
+                            logger.info(`Successfully inserted ${insertCount} products`);
+                            resolve();
+                        }
+                    });
+                });
+            });
+        });
+    } catch (error) {
+        logger.error('Error in fetchAndStoreProducts:', error);
+        throw error;
+    }
+}
+
+// Initialize database tables
+async function initializeDatabase(db, isNewDatabase, logger) {
+    return new Promise((resolve, reject) => {
+        db.serialize(() => {
+            try {
+                // Create products table
+                db.run(`
+                    CREATE TABLE IF NOT EXISTS products (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        item_code TEXT UNIQUE NOT NULL,
+                        name TEXT NOT NULL,
+                        unit_price_with_tax REAL,
+                        barcodes TEXT,
+                        warehouse_glaesibaer INTEGER DEFAULT 0,
+                        warehouse_kringlan INTEGER DEFAULT 0,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                `, (err) => {
+                    if (err) {
+                        logger.error('Error creating products table:', err);
+                        reject(err);
+                        return;
+                    }
+                    logger.info('Products table created or already exists');
+                });
+
+                // Create indexes for faster searching
+                db.run('CREATE INDEX IF NOT EXISTS idx_item_code ON products(item_code)', (err) => {
+                    if (err) logger.warn('Error creating item_code index:', err);
+                    else logger.info('Item code index created or already exists');
+                });
+                db.run('CREATE INDEX IF NOT EXISTS idx_name ON products(name)', (err) => {
+                    if (err) logger.warn('Error creating name index:', err);
+                    else logger.info('Name index created or already exists');
+                });
+                db.run('CREATE INDEX IF NOT EXISTS idx_barcodes ON products(barcodes)', (err) => {
+                    if (err) logger.warn('Error creating barcodes index:', err);
+                    else logger.info('Barcodes index created or already exists');
+                });
+
+                if (isNewDatabase) {
+                    logger.info('New database detected, fetching initial products...');
+                    fetchAndStoreProducts(db, logger)
+                        .then(() => {
+                            logger.info('Initial product sync completed');
+                            resolve();
+                        })
+                        .catch((error) => {
+                            logger.error('Error during initial product sync:', error);
+                            reject(error);
+                        });
+                } else {
+                    resolve();
+                }
+            } catch (error) {
+                logger.error('Error in database initialization:', error);
+                reject(error);
+            }
+        });
+    });
+}
+
 // Configure Winston logger
 const logger = winston.createLogger({
     level: process.env.LOG_LEVEL || 'info',
     format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),
-        winston.format.json()
+        winston.format.json(),
     ),
     transports: [
-        new winston.transports.File({ 
-            filename: 'logs/error.log', 
+        new winston.transports.File({
+            filename: 'logs/error.log',
             level: 'error',
-            maxsize: 5242880, // 5MB
+            maxsize: 5242880,
             maxFiles: 5,
         }),
-        new winston.transports.File({ 
+        new winston.transports.File({
             filename: 'logs/combined.log',
-            maxsize: 5242880, // 5MB
+            maxsize: 5242880,
             maxFiles: 5,
-        })
-    ]
+        }),
+    ],
 });
 
 // Add console logging if not in production
@@ -37,8 +198,8 @@ if (process.env.NODE_ENV !== 'production') {
     logger.add(new winston.transports.Console({
         format: winston.format.combine(
             winston.format.colorize(),
-            winston.format.simple()
-        )
+            winston.format.simple(),
+        ),
     }));
 }
 
@@ -49,7 +210,7 @@ if (!fs.existsSync('logs')) {
 
 const app = express();
 const port = process.env.PORT || 3000;
-const DB_FILE = './database.sqlite';
+const DB_FILE = process.env.DB_FILE || './database.sqlite';
 
 // Redis setup with error handling
 const redis = new Redis({
@@ -61,7 +222,7 @@ const redis = new Redis({
         logger.warn(`Redis connection attempt ${times} failed. Retrying in ${delay}ms`);
         return delay;
     },
-    maxRetriesPerRequest: 3
+    maxRetriesPerRequest: 3,
 });
 
 redis.on('error', (err) => {
@@ -100,9 +261,9 @@ app.use(expressWinston.errorLogger({
 app.use((err, req, res, next) => {
     logger.error('Unhandled error:', err);
     res.status(500).json({
-        error: process.env.NODE_ENV === 'production' 
-            ? 'An internal server error occurred' 
-            : err.message
+        error: process.env.NODE_ENV === 'production'
+            ? 'An internal server error occurred'
+            : err.message,
     });
 });
 
@@ -117,7 +278,7 @@ const db = new sqlite3.Database(DB_FILE, async (err) => {
     } else {
         logger.info('Connected to SQLite database');
         try {
-            await initializeDatabase();
+            await initializeDatabase(db, isNewDatabase, logger);
             logger.info('Database initialization completed');
         } catch (error) {
             logger.error('Database initialization failed:', error);
@@ -126,172 +287,13 @@ const db = new sqlite3.Database(DB_FILE, async (err) => {
     }
 });
 
-// Initialize database tables
-async function initializeDatabase() {
-    return new Promise((resolve, reject) => {
-        db.serialize(() => {
-            try {
-                // Create products table
-                db.run(`
-                    CREATE TABLE IF NOT EXISTS products (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        item_code TEXT UNIQUE NOT NULL,
-                        name TEXT NOT NULL,
-                        unit_price_with_tax REAL,
-                        barcodes TEXT,
-                        warehouse_glaesibaer INTEGER DEFAULT 0,
-                        warehouse_kringlan INTEGER DEFAULT 0,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                `, (err) => {
-                    if (err) {
-                        logger.error('Error creating products table:', err);
-                        reject(err);
-                        return;
-                    }
-                    logger.info('Products table created or already exists');
-                });
-
-                // Create indexes for faster searching
-                db.run('CREATE INDEX IF NOT EXISTS idx_item_code ON products(item_code)', err => {
-                    if (err) logger.warn('Error creating item_code index:', err);
-                    else logger.info('Item code index created or already exists');
-                });
-                db.run('CREATE INDEX IF NOT EXISTS idx_name ON products(name)', err => {
-                    if (err) logger.warn('Error creating name index:', err);
-                    else logger.info('Name index created or already exists');
-                });
-                db.run('CREATE INDEX IF NOT EXISTS idx_barcodes ON products(barcodes)', err => {
-                    if (err) logger.warn('Error creating barcodes index:', err);
-                    else logger.info('Barcodes index created or already exists');
-                });
-
-                if (isNewDatabase) {
-                    logger.info('New database detected, fetching initial products...');
-                    fetchAndStoreProducts()
-                        .then(() => {
-                            logger.info('Initial product sync completed');
-                            resolve();
-                        })
-                        .catch(error => {
-                            logger.error('Error during initial product sync:', error);
-                            reject(error);
-                        });
-                } else {
-                    resolve();
-                }
-            } catch (error) {
-                logger.error('Error in database initialization:', error);
-                reject(error);
-            }
-        });
-    });
-}
-
-// Function to fetch and store products with error handling
-async function fetchAndStoreProducts() {
-    try {
-        logger.info('Starting product fetch from API');
-        const data = new FormData();
-        const config = {
-            method: 'get',
-            maxBodyLength: Infinity,
-            url: 'https://api.dkplus.is/api/v1/Product',
-            headers: {
-                'Authorization': 'Bearer 9fd1c68e-64bc-4930-921e-5dd45d1344f6',
-                ...data.getHeaders()
-            },
-            data: data
-        };
-
-        const response = await axios.request(config);
-        const products = response.data;
-        logger.info(`Fetched ${products.length} products from API`);
-
-        return new Promise((resolve, reject) => {
-            db.serialize(() => {
-                db.run('BEGIN TRANSACTION');
-
-                db.run('DELETE FROM products', [], (err) => {
-                    if (err) {
-                        logger.error('Error clearing products:', err);
-                        db.run('ROLLBACK');
-                        reject(err);
-                        return;
-                    }
-                    logger.info('Cleared existing products');
-
-                    const stmt = db.prepare(`
-                        INSERT INTO products (
-                            item_code, 
-                            name, 
-                            unit_price_with_tax, 
-                            barcodes, 
-                            warehouse_glaesibaer, 
-                            warehouse_kringlan
-                        ) VALUES (?, ?, ?, ?, ?, ?)
-                    `);
-
-                    let insertCount = 0;
-                    products.forEach(product => {
-                        try {
-                            const description = product.Description || '';
-                            const description2 = product.Description2 || '';
-                            const extraDesc1 = product.ExtraDesc1 || '';
-
-                            let name = description;
-                            if (description2) {
-                                name = `${description} ${description2}`.trim();
-                            } else if (extraDesc1) {
-                                name = `${description} ${extraDesc1}`.trim();
-                            }
-
-                            name = name.trim() || product.ItemCode || 'Unknown Product';
-                            const barcodes = JSON.stringify(product.Barcodes?.map(b => b.Barcode) || []);
-                            const warehouseBG1 = product.Warehouses?.find(w => w.Warehouse === 'bg1')?.QuantityInStock || 0;
-                            const warehouseBG2 = product.Warehouses?.find(w => w.Warehouse === 'bg2')?.QuantityInStock || 0;
-
-                            stmt.run(
-                                product.ItemCode || '',
-                                name,
-                                product.UnitPrice1WithTax || 0,
-                                barcodes,
-                                warehouseBG1,
-                                warehouseBG2
-                            );
-                            insertCount++;
-                        } catch (error) {
-                            logger.error(`Error processing product ${product.ItemCode}:`, error);
-                        }
-                    });
-
-                    stmt.finalize();
-                    db.run('COMMIT', (err) => {
-                        if (err) {
-                            logger.error('Error committing transaction:', err);
-                            db.run('ROLLBACK');
-                            reject(err);
-                        } else {
-                            logger.info(`Successfully inserted ${insertCount} products`);
-                            resolve();
-                        }
-                    });
-                });
-            });
-        });
-    } catch (error) {
-        logger.error('Error in fetchAndStoreProducts:', error);
-        throw error;
-    }
-}
-
 // Get all products with error handling
 app.get('/api/products', async (req, res) => {
     try {
         const rows = await new Promise((resolve, reject) => {
-            db.all('SELECT * FROM products', [], (err, rows) => {
+            db.all('SELECT * FROM products', [], (err, result) => {
                 if (err) reject(err);
-                else resolve(rows);
+                else resolve(result);
             });
         });
         logger.info(`Retrieved ${rows.length} products`);
@@ -307,34 +309,34 @@ app.get('/api/products/search', async (req, res) => {
     const startTime = Date.now();
     try {
         const searchQuery = req.query.q?.trim();
-        const page = Math.max(1, parseInt(req.query.page) || 1);
-        let pageSize = parseInt(req.query.pageSize) || DEFAULT_PAGE_SIZE;
-        
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        let pageSize = parseInt(req.query.pageSize, 10) || DEFAULT_PAGE_SIZE;
+
         if (!VALID_PAGE_SIZES.includes(pageSize)) {
             logger.warn(`Invalid page size requested: ${pageSize}, using default: ${DEFAULT_PAGE_SIZE}`);
             pageSize = DEFAULT_PAGE_SIZE;
         }
-        
+
         if (!searchQuery) {
             return res.json({
                 total: 0,
                 page,
                 pageSize,
                 totalPages: 0,
-                results: []
+                results: [],
             });
         }
 
-        const terms = searchQuery.split(/\s+/).filter(term => term.length > 0);
-        logger.info(`Search request: query="${searchQuery}", terms=${terms.length}, page=${page}, pageSize=${pageSize}`);
-        
+        const terms = searchQuery.split(/\s+/).filter((term) => term.length > 0);
+        logger.info(`Search request: query="${searchQuery}", terms=${terms.length}, page=${page}, size=${pageSize}`);
+
         if (terms.length === 0) {
             return res.json({
                 total: 0,
                 page,
                 pageSize,
                 totalPages: 0,
-                results: []
+                results: [],
             });
         }
 
@@ -356,35 +358,31 @@ app.get('/api/products/search', async (req, res) => {
         const offset = (page - 1) * pageSize;
         let countSql = 'SELECT COUNT(*) as total FROM products WHERE ';
         let sql = 'SELECT *, ';
-        
-        const relevanceTerms = terms.map((_, index) => {
-            return `
-                CASE 
-                    WHEN item_code LIKE $${index * 3 + 1} THEN 100
-                    WHEN item_code LIKE $${index * 3 + 2} THEN 50
-                    WHEN name LIKE $${index * 3 + 2} THEN 40
-                    WHEN barcodes LIKE $${index * 3 + 2} THEN 30
-                    WHEN item_code LIKE $${index * 3 + 3} THEN 20
-                    WHEN name LIKE $${index * 3 + 3} THEN 10
-                    WHEN barcodes LIKE $${index * 3 + 3} THEN 5
-                    ELSE 0
-                END`;
-        });
+
+        const relevanceTerms = terms.map((_, index) => `
+            CASE 
+                WHEN item_code LIKE $${index * 3 + 1} THEN 100
+                WHEN item_code LIKE $${index * 3 + 2} THEN 50
+                WHEN name LIKE $${index * 3 + 2} THEN 40
+                WHEN barcodes LIKE $${index * 3 + 2} THEN 30
+                WHEN item_code LIKE $${index * 3 + 3} THEN 20
+                WHEN name LIKE $${index * 3 + 3} THEN 10
+                WHEN barcodes LIKE $${index * 3 + 3} THEN 5
+                ELSE 0
+            END`);
 
         sql += `(${relevanceTerms.join(' + ')}) as relevance `;
         sql += 'FROM products WHERE ';
 
-        const conditions = terms.map((_, index) => {
-            return `(
-                item_code LIKE $${index * 3 + 1} OR 
-                item_code LIKE $${index * 3 + 2} OR 
-                item_code LIKE $${index * 3 + 3} OR
-                name LIKE $${index * 3 + 2} OR 
-                name LIKE $${index * 3 + 3} OR
-                barcodes LIKE $${index * 3 + 2} OR 
-                barcodes LIKE $${index * 3 + 3}
-            )`;
-        });
+        const conditions = terms.map((_, index) => `(
+            item_code LIKE $${index * 3 + 1} OR 
+            item_code LIKE $${index * 3 + 2} OR 
+            item_code LIKE $${index * 3 + 3} OR
+            name LIKE $${index * 3 + 2} OR 
+            name LIKE $${index * 3 + 3} OR
+            barcodes LIKE $${index * 3 + 2} OR 
+            barcodes LIKE $${index * 3 + 3}
+        )`);
 
         const whereClause = conditions.join(' AND ');
         countSql += whereClause;
@@ -392,7 +390,7 @@ app.get('/api/products/search', async (req, res) => {
         sql += ' ORDER BY relevance DESC LIMIT ? OFFSET ?';
 
         const params = [];
-        terms.forEach(term => {
+        terms.forEach((term) => {
             params.push(term);
             params.push(`%${term}%`);
             params.push(`%${term}`);
@@ -408,9 +406,9 @@ app.get('/api/products/search', async (req, res) => {
 
             const searchParams = [...params, pageSize, offset];
             const rows = await new Promise((resolve, reject) => {
-                db.all(sql, searchParams, (err, rows) => {
+                db.all(sql, searchParams, (err, result) => {
                     if (err) reject(err);
-                    else resolve(rows);
+                    else resolve(result);
                 });
             });
 
@@ -420,7 +418,7 @@ app.get('/api/products/search', async (req, res) => {
                 page,
                 pageSize,
                 totalPages,
-                results: rows
+                results: rows,
             };
 
             try {
@@ -432,17 +430,17 @@ app.get('/api/products/search', async (req, res) => {
 
             const endTime = Date.now();
             logger.info(`Search completed in ${endTime - startTime}ms with ${rows.length} results`);
-            res.json(result);
+            return res.json(result);
         } catch (error) {
             logger.error('Search error:', error);
             throw error;
         }
     } catch (error) {
         logger.error('Search endpoint error:', error);
-        res.status(500).json({ 
-            error: process.env.NODE_ENV === 'production' 
-                ? 'An error occurred while searching' 
-                : error.message 
+        return res.status(500).json({
+            error: process.env.NODE_ENV === 'production'
+                ? 'An error occurred while searching'
+                : error.message,
         });
     }
 });
@@ -479,5 +477,5 @@ if (process.env.NODE_ENV !== 'test') {
 module.exports = {
     app,
     redis,
-    db
+    db,
 }; 
